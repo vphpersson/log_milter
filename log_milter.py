@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from logging import Logger, getLogger
+from logging import Logger, getLogger, INFO
 from logging.handlers import TimedRotatingFileHandler
 from typing import Type
 from multiprocessing import Process
@@ -24,6 +24,9 @@ log_handler = make_log_handler(
     provider_name='tshark_ecs',
     generate_field_names=('event.timezone', 'host.name', 'host.hostname')
 )(filename='log_milter.log', when='D')
+
+LOG.addHandler(hdlr=log_handler)
+LOG.setLevel(level=INFO)
 
 
 class LogMilter(MilterBase):
