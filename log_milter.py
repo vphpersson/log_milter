@@ -186,7 +186,7 @@ class LogMilter(MilterBase):
     @milter_noreply
     def eoh(self):
         try:
-            self._message.write('\n')
+            self._message.write(b'\n')
             self._ecs_base.email.headers = dict(self._headers)
         except:
             LOG.exception(msg='An unexpected exception occurred in eoh.')
