@@ -6,12 +6,12 @@ from re import compile as re_compile, Pattern as RePattern
 from typing import Type, Final
 from socket import AddressFamily
 from collections import defaultdict
-from email import message_from_string as email_message_from_string
+from email import message_from_bytes as email_message_from_bytes
 from email.utils import parseaddr as email_util_parseaddr, parsedate as email_utils_parsedate
 from functools import partial
 from time import mktime
 from datetime import datetime
-from io import StringIO
+from io import BytesIO
 
 import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
@@ -48,7 +48,7 @@ class LogMilter(MilterBase):
             self._ecs_base.network = Network(transport=network_transport)
 
         self._headers: defaultdict[str, list[str]] = defaultdict(list)
-        self._message = StringIO()
+        self._message: BytesIO = BytesIO()
 
     @milter_noreply
     def connect(self, hostname, family, hostaddr):
@@ -115,11 +115,13 @@ class LogMilter(MilterBase):
         return MILTER_CONTINUE
 
     @milter_noreply
-    def header(self, field, value):
+    def header_bytes(self, fld: str, val: bytes):
+        self._message.write(fld.encode(encoding='ascii') + b': ' + val + b'\n')
+
+    @milter_noreply
+    def header(self, field: str, value: str):
         try:
             fixed_field = field.replace('-', '_').lower()
-
-            self._message.write(f'{field}: {value}\n')
 
             match fixed_field:
                 case 'x_mailer':
@@ -198,7 +200,7 @@ class LogMilter(MilterBase):
     def eom(self):
         try:
             email_attachment_file_list = email_file_attachments_from_email_message(
-                email_message=email_message_from_string(self._message.getvalue())
+                email_message=email_message_from_bytes(self._message.getvalue())
             )
             if email_attachment_file_list:
                 self._ecs_base.email.attachments = [
