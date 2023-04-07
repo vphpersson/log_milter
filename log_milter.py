@@ -117,6 +117,8 @@ class LogMilter(MilterBase):
     def header_bytes(self, fld: str, val: bytes):
         self._message.write(fld.encode(encoding='ascii') + b': ' + val + b'\n')
 
+        return MILTER_CONTINUE
+
     @milter_noreply
     def header(self, field: str, value: str):
         try:
