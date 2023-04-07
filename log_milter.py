@@ -28,7 +28,7 @@ log_handler = make_log_handler(
 LOG.addHandler(hdlr=log_handler)
 LOG.setLevel(level=INFO)
 
-TLS_VERSION_PATTERN: Final[RePattern] = re_compile(pattern='^(?P<protocol>.+)v(?<number>[0-9]+)$')
+TLS_VERSION_PATTERN: Final[RePattern] = re_compile(pattern='^(?P<protocol>.+)v(?P<number>[0-9]+)$')
 
 
 class LogMilter(MilterBase):
