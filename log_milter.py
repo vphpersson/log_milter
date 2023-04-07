@@ -4,19 +4,21 @@ from logging import INFO
 from logging.handlers import TimedRotatingFileHandler
 from re import compile as re_compile, Pattern as RePattern
 from typing import Type, Final
-from multiprocessing import Process
 from socket import AddressFamily
 from collections import defaultdict
+from email import message_from_bytes as email_message_from_bytes
 from email.utils import parseaddr as email_util_parseaddr, parsedate as email_utils_parsedate
 from functools import partial
 from time import mktime
 from datetime import datetime
+from io import BytesIO
 
 import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
     uniqueID as milter_unique_id
-from ecs_py import Email, BCC, CC, From, To, ReplyTo, RcptTo, SMTP, Sender, Base, Server, Network, Client, TLS
-from ecs_tools_py import make_log_handler
+from ecs_py import Email, BCC, CC, From, To, ReplyTo, RcptTo, SMTP, Sender, Base, Server, Network, Client, TLS, \
+    EmailAttachment
+from ecs_tools_py import make_log_handler, email_file_attachments_from_email_message
 
 from log_milter import LOG, decode_address, decode_address_line
 from log_milter.cli import LogMilterArgumentParser
@@ -34,7 +36,6 @@ TLS_VERSION_PATTERN: Final[RePattern] = re_compile(pattern='^(?P<protocol>.+)v(?
 
 
 class LogMilter(MilterBase):
-
     def __init__(self, server_port: int | None = None, network_transport: str | None = None):
         self.id = milter_unique_id()
 
@@ -47,6 +48,7 @@ class LogMilter(MilterBase):
             self._ecs_base.network = Network(transport=network_transport)
 
         self._headers: defaultdict[str, list[str]] = defaultdict(list)
+        self._message = BytesIO()
 
     @milter_noreply
     def connect(self, hostname, family, hostaddr):
@@ -117,6 +119,8 @@ class LogMilter(MilterBase):
         try:
             fixed_field = field.replace('-', '_').lower()
 
+            self._message.write(f'{field}: {value}\n')
+
             match fixed_field:
                 case 'x_mailer':
                     self._ecs_base.email.x_mailer = value
@@ -179,14 +183,28 @@ class LogMilter(MilterBase):
     @milter_noreply
     def eoh(self):
         try:
+            self._message.write('\n')
             self._ecs_base.email.headers = dict(self._headers)
         except:
             LOG.exception(msg='An unexpected exception occurred in eoh.')
 
         return MILTER_CONTINUE
 
+    @milter_noreply
+    def body(self, blk: bytes):
+        self._message.write(blk)
+        return MILTER_CONTINUE
+
     def eom(self):
         try:
+            email_attachment_file_list = email_file_attachments_from_email_message(
+                email_message=email_message_from_bytes(self._message.getvalue())
+            )
+            if email_attachment_file_list:
+                self._ecs_base.email.attachments = [
+                    EmailAttachment(file=email_attachment_file)
+                    for email_attachment_file in email_attachment_file_list
+                ]
             LOG.info(
                 msg='An incoming email was logged.',
                 extra=dict(self._ecs_base) | dict(_ecs_logger_handler_options=dict(merge_extra=True))
@@ -201,9 +219,6 @@ def main():
     args: Type[LogMilterArgumentParser.Namespace] = LogMilterArgumentParser().parse_args()
 
     try:
-        job = Process()
-        job.start()
-
         Milter.factory = partial(
             LogMilter,
             server_port=args.server_port,
@@ -214,7 +229,6 @@ def main():
         Milter.set_flags(0)
         Milter.set_exception_policy(MILTER_CONTINUE)
         Milter.runmilter('log_milter', args.socket_path, args.timeout)
-        job.join()
     except:
         LOG.exception(msg='An unexpected exception occurred.')
 
