@@ -9,6 +9,8 @@ from socket import AddressFamily
 from collections import defaultdict
 from email.utils import parseaddr as email_util_parseaddr, parsedate as email_utils_parsedate
 from functools import partial
+from time import mktime
+from datetime import datetime
 
 import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
@@ -28,7 +30,7 @@ log_handler = make_log_handler(
 LOG.addHandler(hdlr=log_handler)
 LOG.setLevel(level=INFO)
 
-TLS_VERSION_PATTERN: Final[RePattern] = re_compile(pattern='^(?P<protocol>.+)v(?P<number>[0-9]+)$')
+TLS_VERSION_PATTERN: Final[RePattern] = re_compile(pattern='^(?P<protocol>.+)v(?P<number>[0-9.]+)$')
 
 
 class LogMilter(MilterBase):
@@ -51,7 +53,7 @@ class LogMilter(MilterBase):
         try:
             server: Server = self._ecs_base.get_field_value(field_name='server', create_namespaces=True)
             server.address = self.getsymval(sym='j')
-            server.ip = self.getsymval(sym='{daemon_addr')
+            server.ip = self.getsymval(sym='{daemon_addr}')
 
             match family:
                 case AddressFamily.AF_INET:
@@ -127,7 +129,9 @@ class LogMilter(MilterBase):
                 case 'subject':
                     self._ecs_base.email.subject = value
                 case 'date':
-                    self._ecs_base.email.origination_timestamp = email_utils_parsedate(data=value)
+                    self._ecs_base.email.origination_timestamp = datetime.fromtimestamp(
+                        mktime(email_utils_parsedate(data=value))
+                    )
                 case 'content_type':
                     self._ecs_base.email.content_type = value
                 case 'bcc' | 'cc' | 'from' | 'to' | 'reply_to':
