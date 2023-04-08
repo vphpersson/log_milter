@@ -7,6 +7,7 @@ from typing import Type, Final
 from socket import AddressFamily
 from collections import defaultdict
 from email import message_from_bytes as email_message_from_bytes
+from email.message import Message
 from email.utils import parseaddr as email_util_parseaddr, parsedate as email_utils_parsedate
 from functools import partial
 from time import mktime
@@ -17,8 +18,8 @@ import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
     uniqueID as milter_unique_id
 from ecs_py import Email, BCC, CC, From, To, ReplyTo, RcptTo, SMTP, Sender, Base, Server, Network, Client, TLS, \
-    EmailAttachment
-from ecs_tools_py import make_log_handler, email_file_attachments_from_email_message
+    EmailAttachment, EmailAttachmentFile, EmailBody
+from ecs_tools_py import make_log_handler, email_file_attachments_from_email_message, email_bodies_from_email_message
 
 from log_milter import LOG, decode_address, decode_address_line
 from log_milter.cli import LogMilterArgumentParser
@@ -199,19 +200,37 @@ class LogMilter(MilterBase):
         return MILTER_CONTINUE
 
     def eom(self):
+        message: Message | None = None
         try:
-            email_attachment_file_list = email_file_attachments_from_email_message(
-                email_message=email_message_from_bytes(self._message.getvalue())
-            )
-            if email_attachment_file_list:
-                self._ecs_base.email.attachments = [
-                    EmailAttachment(file=email_attachment_file)
-                    for email_attachment_file in email_attachment_file_list
-                ]
-            LOG.info(
-                msg='An incoming email was logged.',
-                extra=dict(self._ecs_base) | dict(_ecs_logger_handler_options=dict(merge_extra=True))
-            )
+            try:
+                message = email_message_from_bytes(self._message.getvalue())
+            except:
+                LOG.exception(
+                    msg='An unexpected exception occurred when attempting to create a email.message.Message from bytes.'
+                )
+
+            if message:
+                try:
+                    email_attachment_file_list: list[EmailAttachmentFile] = email_file_attachments_from_email_message(
+                        email_message=message
+                    )
+                    if email_attachment_file_list:
+                        self._ecs_base.email.attachments = [
+                            EmailAttachment(file=email_attachment_file)
+                            for email_attachment_file in email_attachment_file_list
+                        ]
+                except:
+                    LOG.exception(msg='An unexpected exception occurred in when parsing email attachments.')
+
+                try:
+                    self._ecs_base.email.bodies = email_bodies_from_email_message(email_message=message)
+                except:
+                    LOG.exception(msg='An unexpected exception occurred when parsing email bodies.')
+
+                LOG.info(
+                    msg='An incoming email was logged.',
+                    extra=dict(self._ecs_base) | dict(_ecs_logger_handler_options=dict(merge_extra=True))
+                )
         except:
             LOG.exception(msg='An unexpected exception occurred in eom.')
 
