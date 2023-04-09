@@ -5,23 +5,18 @@ from logging.handlers import TimedRotatingFileHandler
 from re import compile as re_compile, Pattern as RePattern
 from typing import Type, Final
 from socket import AddressFamily
-from collections import defaultdict
 from email import message_from_bytes as email_message_from_bytes
-from email.message import Message
-from email.utils import parseaddr as email_util_parseaddr, parsedate as email_utils_parsedate
+from email.utils import parseaddr as email_util_parseaddr
 from functools import partial
-from time import mktime
-from datetime import datetime
 from io import BytesIO
 
 import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
-    uniqueID as milter_unique_id
-from ecs_py import Email, BCC, CC, From, To, ReplyTo, RcptTo, SMTP, Sender, Base, Server, Network, Client, TLS, \
-    EmailAttachment, EmailAttachmentFile, EmailBody
-from ecs_tools_py import make_log_handler, email_file_attachments_from_email_message, email_bodies_from_email_message
+    uniqueID as milter_unique_id, decode as milter_decode
+from ecs_py import SMTP, Sender, Base, Server, Network, Client, TLS
+from ecs_tools_py import make_log_handler, email_from_email_message
 
-from log_milter import LOG, decode_address, decode_address_line
+from log_milter import LOG
 from log_milter.cli import LogMilterArgumentParser
 
 log_handler = make_log_handler(
@@ -40,23 +35,27 @@ class LogMilter(MilterBase):
     def __init__(self, server_port: int | None = None, network_transport: str | None = None):
         self.id = milter_unique_id()
 
-        self._ecs_base: Base = Base(email=Email(smtp=SMTP(), direction='inbound'))
+        self._ecs_base: Base = Base(
+            client=Client(),
+            server=Server(),
+            smtp=SMTP(),
+            tls=TLS(),
+            network=Network()
+        )
 
         if server_port:
-            self._ecs_base.server = Server(port=server_port)
+            self._ecs_base.server.port = server_port
             
         if network_transport:
-            self._ecs_base.network = Network(transport=network_transport)
+            self._ecs_base.network.transport = network_transport
 
-        self._headers: defaultdict[str, list[str]] = defaultdict(list)
         self._message: BytesIO = BytesIO()
 
     @milter_noreply
     def connect(self, hostname, family, hostaddr):
         try:
-            server: Server = self._ecs_base.get_field_value(field_name='server', create_namespaces=True)
-            server.address = self.getsymval(sym='j')
-            server.ip = self.getsymval(sym='{daemon_addr}')
+            self._ecs_base.server.address = self.getsymval(sym='j')
+            self._ecs_base.server.ip = self.getsymval(sym='{daemon_addr}')
 
             match family:
                 case AddressFamily.AF_INET:
@@ -67,9 +66,9 @@ class LogMilter(MilterBase):
                     network_type = None
 
             if network_type:
-                network: Network = self._ecs_base.get_field_value(field_name='network', create_namespaces=True)
-                network.type = network_type
-                self._ecs_base.client = Client(ip=hostaddr[0], port=hostaddr[1])
+                self._ecs_base.network.type = network_type
+                self._ecs_base.client.ip=hostaddr[0]
+                self._ecs_base.client.port = hostaddr[1]
         except:
             LOG.exception(msg='An unexpected exception occurred in connect.')
 
@@ -78,18 +77,16 @@ class LogMilter(MilterBase):
     @milter_noreply
     def hello(self, hostname: str):
         try:
-            self._ecs_base.email.smtp.ehlo = hostname
+            self._ecs_base.smtp.ehlo = hostname
 
             if cipher := self.getsymval(sym='{cipher}'):
-                tls: TLS = self._ecs_base.get_field_value(field_name='tls', create_namespaces=True)
-                tls.cipher = cipher
+                self._ecs_base.tls.cipher = cipher
 
             if tls_version := self.getsymval(sym='{tls_version}'):
                 if match := TLS_VERSION_PATTERN.match(string=tls_version):
-                    tls: TLS = self._ecs_base.get_field_value(field_name='tls', create_namespaces=True)
                     match_groupdict: dict[str, str] = match.groupdict()
-                    tls.version_protocol = match_groupdict['protocol'].lower()
-                    tls.version = match_groupdict['number']
+                    self._ecs_base.tls.version_protocol = match_groupdict['protocol'].lower()
+                    self._ecs_base.tls.version = match_groupdict['number']
         except:
             LOG.exception(msg='An unexpected exception occurred in hello.')
 
@@ -98,8 +95,7 @@ class LogMilter(MilterBase):
     @milter_noreply
     def envfrom(self, f: str, *args):
         try:
-            address_name, real_address = decode_address(address=f)
-            self._ecs_base.email.sender = Sender(name=address_name, address=real_address, original=f)
+            self._ecs_base.smtp.mail_from = email_util_parseaddr(addr=f)[1]
         except:
             LOG.exception(msg='An unexpected exception occurred in envfrom.')
 
@@ -108,87 +104,26 @@ class LogMilter(MilterBase):
     @milter_noreply
     def envrcpt(self, to: str, *args):
         try:
-            address_name, real_address = decode_address(address=to)
-            self._ecs_base.email.smtp.rcpt_to = RcptTo(name=address_name, address=real_address, original=to)
+            self._ecs_base.smtp.rcpt_to = email_util_parseaddr(addr=to)[1]
         except:
             LOG.exception(msg='An unexpected exception occurred in envrcpt.')
 
         return MILTER_CONTINUE
 
-    def header_bytes(self, fld: str, val: bytes):
-        self._message.write(fld.encode(encoding='ascii') + b': ' + val + b'\n')
-
-        return MILTER_CONTINUE
-
     @milter_noreply
-    def header(self, field: str, value: str):
+    @milter_decode('bytes')
+    def header(self, fld: str, val: bytes):
         try:
-            fixed_field = field.replace('-', '_').lower()
-
-            match fixed_field:
-                case 'x_mailer':
-                    self._ecs_base.email.x_mailer = value
-                case 'x_original_ip':
-                    self._ecs_base.email.x_original_ip = value
-                case 'x_user_agent':
-                    self._ecs_base.email.x_user_agent = value
-                case 'message_id':
-                    self._ecs_base.email.message_id = email_util_parseaddr(addr=value)[1]
-                case 'subject':
-                    self._ecs_base.email.subject = value
-                case 'date':
-                    self._ecs_base.email.origination_timestamp = datetime.fromtimestamp(
-                        mktime(email_utils_parsedate(data=value))
-                    )
-                case 'content_type':
-                    self._ecs_base.email.content_type = value
-                case 'bcc' | 'cc' | 'from' | 'to' | 'reply_to':
-                    name_list: list[str | None] = []
-                    address_list: list[str] = []
-
-                    for name, address in decode_address_line(line=value):
-                        name_list.append(name)
-                        address_list.append(address)
-
-                    setattr_field: str = fixed_field
-
-                    constructor = None
-
-                    match fixed_field:
-                        case 'bcc':
-                            constructor = BCC
-                        case 'cc':
-                            constructor = CC
-                        case 'from':
-                            constructor = From
-                            setattr_field = 'from_'
-                        case 'to':
-                            constructor = To
-                        case 'reply_to':
-                            constructor = ReplyTo
-                        case _:
-                            LOG.warning(
-                                msg='An unexpected fixed field value was encountered.',
-                                extra=dict(
-                                    error=dict(input=fixed_field),
-                                    _ecs_logger_handler_options=dict(merge_extra=True)
-                                )
-                            )
-
-                    if constructor:
-                        setattr(self._ecs_base.email, setattr_field, constructor(name=name_list, address=address_list))
-
-            self._headers[fixed_field].append(value)
+            self._message.write(fld.encode(encoding='ascii') + b': ' + val + b'\r\n')
         except:
-            LOG.exception(msg='An unexpected exception occurred in header.')
+            LOG.exception(msg='An unexpected exception occurred in header_bytes.')
 
         return MILTER_CONTINUE
 
     @milter_noreply
     def eoh(self):
         try:
-            self._message.write(b'\n')
-            self._ecs_base.email.headers = dict(self._headers)
+            self._message.write(b'\r\n')
         except:
             LOG.exception(msg='An unexpected exception occurred in eoh.')
 
@@ -199,40 +134,32 @@ class LogMilter(MilterBase):
         self._message.write(blk)
         return MILTER_CONTINUE
 
-    def eom(self):
-        message: Message | None = None
+    @milter_noreply
+    def close(self):
         try:
             try:
-                message = email_message_from_bytes(self._message.getvalue())
+                self._ecs_base.email = email_from_email_message(
+                    email_message=email_message_from_bytes(self._message.getvalue()),
+                    include_raw_headers=True,
+                    extract_attachments=True,
+                    extract_bodies=True,
+                    extract_attachment_contents=False,
+                    extract_body_content=True
+                )
+
+                if mail_from := self._ecs_base.smtp.mail_from:
+                    self._ecs_base.email.sender = Sender(address=mail_from)
             except:
                 LOG.exception(
                     msg='An unexpected exception occurred when attempting to create a email.message.Message from bytes.'
                 )
 
-            if message:
-                try:
-                    email_attachment_file_list: list[EmailAttachmentFile] = email_file_attachments_from_email_message(
-                        email_message=message
-                    )
-                    if email_attachment_file_list:
-                        self._ecs_base.email.attachments = [
-                            EmailAttachment(file=email_attachment_file)
-                            for email_attachment_file in email_attachment_file_list
-                        ]
-                except:
-                    LOG.exception(msg='An unexpected exception occurred in when parsing email attachments.')
-
-                try:
-                    self._ecs_base.email.bodies = email_bodies_from_email_message(email_message=message)
-                except:
-                    LOG.exception(msg='An unexpected exception occurred when parsing email bodies.')
-
-                LOG.info(
-                    msg='An incoming email was logged.',
-                    extra=dict(self._ecs_base) | dict(_ecs_logger_handler_options=dict(merge_extra=True))
-                )
+            LOG.info(
+                msg='An incoming email was logged.',
+                extra=dict(self._ecs_base) | dict(_ecs_logger_handler_options=dict(merge_extra=True))
+            )
         except:
-            LOG.exception(msg='An unexpected exception occurred in eom.')
+            LOG.exception(msg='An unexpected exception occurred in close.')
 
         return MILTER_CONTINUE
 
