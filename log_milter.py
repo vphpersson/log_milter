@@ -58,10 +58,13 @@ class ExtraExchangeData:
     queue_id: str | None = None
 
 
-def _parse_transcript(transcript_data: str) -> list[SMTPExchange]:
+def _parse_transcript(transcript_data: str) -> tuple[list[SMTPExchange], ExtraExchangeData | None]:
+
+    extra_exchange_data = ExtraExchangeData()
+
     transcript_data_lines = transcript_data.splitlines()
     if not transcript_data_lines:
-        return []
+        return [], extra_exchange_data
 
     smtp_exchange_list: list[SMTPExchange] = []
     smtp_request: SMTPRequest | None = None
@@ -86,6 +89,10 @@ def _parse_transcript(transcript_data: str) -> list[SMTPExchange]:
 
             smtp_request = None
             response_lines = []
+
+            if match := _SMTP_QUEUED_AS_PATTERN:
+                extra_exchange_data.queue_id = match.groupdict()['queue_id']
+
         elif match := _SMTP_MULTILINE_RESPONSE_PATTERN.match(string=line):
             response_lines.append(match.groupdict()['text'])
         elif match := _SMTP_COMMAND_PATTERN.match(string=line):
@@ -97,7 +104,7 @@ def _parse_transcript(transcript_data: str) -> list[SMTPExchange]:
         else:
             raise ValueError(f'Malformed SMTP line?: {line}')
 
-    return smtp_exchange_list
+    return smtp_exchange_list, extra_exchange_data
 
 
 class LogMilter(MilterBase):
@@ -233,7 +240,11 @@ class LogMilter(MilterBase):
                     transcript_data: str = (self._transcript_directory / f'{client_address}_{client_port}').read_text()
 
                     self._ecs_base.smtp.transcript = SMTPTranscript(original=transcript_data)
-                    self._ecs_base.smtp.transcript.exchange = _parse_transcript(transcript_data=transcript_data)
+
+                    exchange, extra_exchange_data = _parse_transcript(transcript_data=transcript_data)
+                    self._ecs_base.smtp.transcript.exchange = exchange
+                    if local_id := extra_exchange_data.queue_id:
+                        self._ecs_base.email.local_id = local_id
                 except:
                     LOG.exception(
                         msg='An error occurred when attempting to obtain an SMTP transcript.'
