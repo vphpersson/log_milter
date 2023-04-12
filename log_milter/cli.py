@@ -1,3 +1,4 @@
+from pathlib import Path
 from typed_argument_parser import TypedArgumentParser
 
 
@@ -35,6 +36,7 @@ class LogMilterArgumentParser(TypedArgumentParser):
         )
 
         self.add_argument(
-            '--network-transport',
-            help='The network transport that is used for receiving incoming email.'
+            '--transcript-directory',
+            type=Path,
+            default='.'
         )

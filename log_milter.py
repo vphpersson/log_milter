@@ -2,18 +2,24 @@
 
 from logging import INFO
 from logging.handlers import TimedRotatingFileHandler
+from asyncio import run as asyncio_run
 from re import compile as re_compile, Pattern as RePattern
 from typing import Type, Final
+from dataclasses import dataclass
 from socket import AddressFamily
 from email import message_from_bytes as email_message_from_bytes
 from email.utils import parseaddr as email_util_parseaddr
 from functools import partial
 from io import BytesIO
+from time import sleep
+from pathlib import Path
+
 
 import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
     uniqueID as milter_unique_id, decode as milter_decode
-from ecs_py import SMTP, Sender, Base, Server, Network, Client, TLS
+from ecs_py import SMTP, Sender, Base, Server, Network, Client, TLS, SMTPTranscript, SMTPExchange, SMTPRequest, \
+    SMTPResponse
 from ecs_tools_py import make_log_handler, email_from_email_message
 
 from log_milter import LOG
@@ -28,27 +34,90 @@ log_handler = make_log_handler(
 LOG.addHandler(hdlr=log_handler)
 LOG.setLevel(level=INFO)
 
-TLS_VERSION_PATTERN: Final[RePattern] = re_compile(pattern='^(?P<protocol>.+)v(?P<number>[0-9.]+)$')
+TLS_VERSION_PATTERN: Final[RePattern] = re_compile(pattern=r'^(?P<protocol>.+)v(?P<number>[0-9.]+)$')
+
+_SMTP_RESPONSE_PATTERN: Final[RePattern] = re_compile(
+    pattern=r'^(?P<status_code>[0-9]{3})(\s(?P<enhanced_status_code>[0-9]\.[0-9]\.[0-9]))?\s(?P<text>.+)$'
+)
+
+_SMTP_MULTILINE_RESPONSE_PATTERN: Final[RePattern] = re_compile(
+    pattern=r'^(?P<status_code>[0-9]{3})(-(?P<enhanced_status_code>[0-9]\.[0-9]\.[0-9]))?-(?P<text>.+)$'
+)
+
+_SMTP_COMMAND_PATTERN: Final[RePattern] = re_compile(
+    pattern=r'^(?P<command>[^ ]+)( (?P<arguments>.+))?$'
+)
+
+_SMTP_QUEUED_AS_PATTERN: Final[RePattern] = re_compile(
+    pattern=r'^250( 2\.0\.0)? Ok: queued as (?P<queue_id>.+)$'
+)
+
+
+@dataclass
+class ExtraExchangeData:
+    queue_id: str | None = None
+
+
+def _parse_transcript(transcript_data: str) -> list[SMTPExchange]:
+    transcript_data_lines = transcript_data.splitlines()
+    if not transcript_data_lines:
+        return []
+
+    smtp_exchange_list: list[SMTPExchange] = []
+    smtp_request: SMTPRequest | None = None
+    response_lines: list[str] = []
+
+    for line in transcript_data_lines:
+        if match := _SMTP_RESPONSE_PATTERN.match(string=line):
+            group_dict = match.groupdict()
+
+            response_lines.append(group_dict['text'])
+
+            smtp_exchange_list.append(
+                SMTPExchange(
+                    request=smtp_request,
+                    response=SMTPResponse(
+                        status_code=group_dict['status_code'],
+                        enhanced_status_code=group_dict.get('enhanced_status_code'),
+                        lines=response_lines
+                    )
+                )
+            )
+
+            smtp_request = None
+            response_lines = []
+        elif match := _SMTP_MULTILINE_RESPONSE_PATTERN.match(string=line):
+            response_lines.append(match.groupdict()['text'])
+        elif match := _SMTP_COMMAND_PATTERN.match(string=line):
+            group_dict = match.groupdict()
+            smtp_request = SMTPRequest(
+                command=group_dict['command'],
+                arguments_string=group_dict['arguments']
+            )
+        else:
+            raise ValueError(f'Malformed SMTP line?: {line}')
+
+    return smtp_exchange_list
 
 
 class LogMilter(MilterBase):
-    def __init__(self, server_port: int | None = None, network_transport: str | None = None):
+    def __init__(self, server_port: int | None = None, transcript_directory: Path | None = None):
         self.id = milter_unique_id()
+
+        self._transcript_directory: Path = transcript_directory
 
         self._ecs_base: Base = Base(
             client=Client(),
             server=Server(),
             smtp=SMTP(),
             tls=TLS(),
-            network=Network()
+            network=Network(transport='tcp')
         )
 
+        # TODO: It would be nice if I could retrieve this via `getsymval`.
         if server_port:
             self._ecs_base.server.port = server_port
             
-        if network_transport:
-            self._ecs_base.network.transport = network_transport
-
         self._message: BytesIO = BytesIO()
 
     @milter_noreply
@@ -134,25 +203,41 @@ class LogMilter(MilterBase):
         self._message.write(blk)
         return MILTER_CONTINUE
 
-    @milter_noreply
     def close(self):
         try:
             try:
-                self._ecs_base.email = email_from_email_message(
-                    email_message=email_message_from_bytes(self._message.getvalue()),
-                    include_raw_headers=True,
-                    extract_attachments=True,
-                    extract_bodies=True,
-                    extract_attachment_contents=False,
-                    extract_body_content=True
-                )
+                if message_bytes := self._message.getvalue():
+                    self._ecs_base.email = email_from_email_message(
+                        email_message=email_message_from_bytes(message_bytes),
+                        include_raw_headers=True,
+                        extract_attachments=True,
+                        extract_bodies=True,
+                        extract_attachment_contents=False,
+                        extract_body_content=True
+                    )
 
-                if mail_from := self._ecs_base.smtp.mail_from:
-                    self._ecs_base.email.sender = Sender(address=mail_from)
+                    if mail_from := self._ecs_base.smtp.mail_from:
+                        self._ecs_base.email.sender = Sender(address=mail_from)
             except:
                 LOG.exception(
                     msg='An unexpected exception occurred when attempting to create a email.message.Message from bytes.'
                 )
+
+            if self._transcript_directory and self._ecs_base.client:
+                try:
+                    client_ip = self._ecs_base.client.ip
+                    client_port = self._ecs_base.client.port
+                    # NOTE: I don't like to use sleep at all... Affects mail server throughput?
+                    sleep(0.5)
+
+                    transcript_data: str = (self._transcript_directory / f'/{client_ip}_{client_port}').read_text()
+
+                    self._ecs_base.smtp.transcript = SMTPTranscript(original=transcript_data)
+                    self._ecs_base.smtp.transcript.exchange = _parse_transcript(transcript_data=transcript_data)
+                except:
+                    LOG.exception(
+                        msg='An error occurred when attempting to obtain an SMTP transcript.'
+                    )
 
             LOG.info(
                 msg='An incoming email was logged.',
@@ -164,7 +249,7 @@ class LogMilter(MilterBase):
         return MILTER_CONTINUE
 
 
-def main():
+async def main():
     args: Type[LogMilterArgumentParser.Namespace] = LogMilterArgumentParser().parse_args()
 
     try:
@@ -183,4 +268,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    asyncio_run(main())
