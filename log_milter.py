@@ -136,7 +136,7 @@ class LogMilter(MilterBase):
 
             if network_type:
                 self._ecs_base.network.type = network_type
-                self._ecs_base.client.ip=hostaddr[0]
+                self._ecs_base.client.address = hostaddr[0]
                 self._ecs_base.client.port = hostaddr[1]
         except:
             LOG.exception(msg='An unexpected exception occurred in connect.')
@@ -225,12 +225,12 @@ class LogMilter(MilterBase):
 
             if self._transcript_directory and self._ecs_base.client:
                 try:
-                    client_ip = self._ecs_base.client.ip
+                    client_address = self._ecs_base.client.address
                     client_port = self._ecs_base.client.port
                     # NOTE: I don't like to use sleep at all... Affects mail server throughput?
                     sleep(0.5)
 
-                    transcript_data: str = (self._transcript_directory / f'/{client_ip}_{client_port}').read_text()
+                    transcript_data: str = (self._transcript_directory / f'{client_address}_{client_port}').read_text()
 
                     self._ecs_base.smtp.transcript = SMTPTranscript(original=transcript_data)
                     self._ecs_base.smtp.transcript.exchange = _parse_transcript(transcript_data=transcript_data)
