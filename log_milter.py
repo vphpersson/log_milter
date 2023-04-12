@@ -256,7 +256,7 @@ async def main():
         Milter.factory = partial(
             LogMilter,
             server_port=args.server_port,
-            network_transport=args.network_transport
+            transcript_directory=args.transcript_directory
         )
 
         # Mails are not modified, so no flags.
