@@ -90,7 +90,7 @@ def _parse_transcript(transcript_data: str) -> tuple[list[SMTPExchange], ExtraEx
             smtp_request = None
             response_lines = []
 
-            if match := _SMTP_QUEUED_AS_PATTERN:
+            if match := _SMTP_QUEUED_AS_PATTERN.match(string=line):
                 extra_exchange_data.queue_id = match.groupdict()['queue_id']
 
         elif match := _SMTP_MULTILINE_RESPONSE_PATTERN.match(string=line):
