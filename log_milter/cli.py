@@ -7,7 +7,7 @@ class LogMilterArgumentParser(TypedArgumentParser):
         socket_path: str
         timeout: int
         server_port: int | None
-        network_transport: str | None
+        transcript_directory: Path | None = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(
@@ -38,5 +38,6 @@ class LogMilterArgumentParser(TypedArgumentParser):
         self.add_argument(
             '--transcript-directory',
             type=Path,
-            default='.'
+            default='.',
+            help='The path of a directory from which to read transcripts.'
         )
