@@ -19,8 +19,8 @@ import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
     uniqueID as milter_unique_id, decode as milter_decode
 from ecs_py import SMTP, Sender, Base, Server, Network, Client, TLS, SMTPTranscript, SMTPExchange, SMTPRequest, \
-    SMTPResponse
-from ecs_tools_py import make_log_handler, email_from_email_message
+    SMTPResponse, SMTPEnhancedStatusCode, Error
+from ecs_tools_py import make_log_handler, email_from_email_message, user_from_smtp_to_from, related_from_ecs_email
 
 from log_milter import LOG
 from log_milter.cli import LogMilterArgumentParser
@@ -34,6 +34,8 @@ log_handler = make_log_handler(
 LOG.addHandler(hdlr=log_handler)
 LOG.setLevel(level=INFO)
 
+SLEEP_SECONDS: Final[float] = 0.5
+
 TLS_VERSION_PATTERN: Final[RePattern] = re_compile(pattern=r'^(?P<protocol>.+)v(?P<number>[0-9.]+)$')
 
 _SMTP_RESPONSE_PATTERN: Final[RePattern] = re_compile(
@@ -41,7 +43,7 @@ _SMTP_RESPONSE_PATTERN: Final[RePattern] = re_compile(
 )
 
 _SMTP_MULTILINE_RESPONSE_PATTERN: Final[RePattern] = re_compile(
-    pattern=r'^(?P<status_code>[0-9]{3})(-(?P<enhanced_status_code>[0-9]\.[0-9]\.[0-9]))?-(?P<text>.+)$'
+    pattern=r'^(?P<status_code>[0-9]{3})(-(?P<enhanced_status_code>[0-9]\.[0-9]{1,3}\.[0-9]{1,3}))?-(?P<text>.+)$'
 )
 
 _SMTP_COMMAND_PATTERN: Final[RePattern] = re_compile(
@@ -49,13 +51,122 @@ _SMTP_COMMAND_PATTERN: Final[RePattern] = re_compile(
 )
 
 _SMTP_QUEUED_AS_PATTERN: Final[RePattern] = re_compile(
-    pattern=r'^250( 2\.0\.0)? Ok: queued as (?P<queue_id>.+)$'
+    pattern=r'^250( 2\.0\.0)? Ok: ([0-9]+ bytes )?queued as (?P<queue_id>.+)$'
+)
+
+_ENHANCED_STATUS_CODE_PATTERN: Final[RePattern] = re_compile(
+    pattern='^(?P<class>[0-9]{1,3})\.(?P<subject>[0-9]{1,3})\.(?P<detail>[0-9]{1,3})$'
 )
 
 
 @dataclass
 class ExtraExchangeData:
     queue_id: str | None = None
+    error_message: str | None = None
+    error_code: str | None = None
+    error_type: str | None = None
+
+
+CLASS_TO_TEXT: Final[dict[str, str]] = {
+    "2": 'Success',
+    "4": 'Persistent Transient Failure',
+    "5": 'Permanent Failure'
+}
+
+SUBJECT_TO_TEXT: Final[dict[str, str]] = {
+    # "0": 'Other or Undefined Status',
+    "1": 'Addressing Status',
+    "2": 'Mailbox Status',
+    "3": 'Mail System Status',
+    "4": 'Network and Routing Status',
+    "5": 'Mail Delivery Protocol Status',
+    "6": 'Message Content or Media Status',
+    "7": 'Security or Policy Status'
+}
+
+SUBJECT_DETAIL_TO_TEXT: Final[dict[tuple[str, str], str]] = {
+    # ("0", "0"): "Other undefined Status",
+    # ("1", "0"): "Other address status",
+    ("1", "1"): "Bad destination mailbox address",
+    ("1", "2"): "Bad destination system address",
+    ("1", "3"): "Bad destination mailbox address syntax",
+    ("1", "4"): "Destination mailbox address ambiguous",
+    ("1", "5"): "Destination address valid",
+    ("1", "6"): "Destination mailbox has moved, No forwarding address",
+    ("1", "7"): "Bad sender's mailbox address syntax",
+    ("1", "8"): "Bad sender's system address",
+    ("1", "9"): "Message relayed to non-compliant mailer",
+    ("1", "10"): "Recipient address has null MX",
+    ("2", "0"): "Other or undefined mailbox status",
+    ("2", "1"): "Mailbox disabled, not accepting messages",
+    ("2", "2"): "Mailbox full",
+    ("2", "3"): "Message length exceeds administrative limit",
+    ("2", "4"): "Mailing list expansion problem",
+    ("3", "0"): "Other or undefined mail system status",
+    ("3", "1"): "Mail system full",
+    ("3", "2"): "System not accepting network messages",
+    ("3", "3"): "System not capable of selected features",
+    ("3", "4"): "Message too big for system",
+    ("3", "5"): "System incorrectly configured",
+    ("3", "6"): "Requested priority was changed",
+    ("4", "0"): "Other or undefined network or routing status",
+    ("4", "1"): "No answer from host",
+    ("4", "2"): "Bad connection",
+    ("4", "3"): "Directory server failure",
+    ("4", "4"): "Unable to route",
+    ("4", "5"): "Mail system congestion",
+    ("4", "6"): "Routing loop detected",
+    ("4", "7"): "Delivery time expired",
+    ("5", "0"): "Other or undefined protocol status",
+    ("5", "1"): "Invalid command",
+    ("5", "2"): "Syntax error",
+    ("5", "3"): "Too many recipients",
+    ("5", "4"): "Invalid command arguments",
+    ("5", "5"): "Wrong protocol version",
+    ("5", "6"): "Authentication Exchange line is too long",
+    ("6", "0"): "Other or undefined media error",
+    ("6", "1"): "Media not supported",
+    ("6", "2"): "Conversion required and prohibited",
+    ("6", "3"): "Conversion required but not supported",
+    ("6", "4"): "Conversion with loss performed",
+    ("6", "5"): "Conversion Failed",
+    ("6", "6"): "Message content not available",
+    ("6", "7"): "Non-ASCII addresses not permitted for that sender/recipient",
+    ("6", "8"): "UTF-8 string reply is required, but not permitted by the SMTP client",
+    ("6", "9"): "UTF-8 header message cannot be transferred to one or more recipients, so the message must be rejected",
+    # ("6", "10"): None,
+    ("7", "0"): "Other or undefined security status",
+    ("7", "1"): "Delivery not authorized, message refused",
+    ("7", "2"): "Mailing list expansion prohibited",
+    ("7", "3"): "Security conversion required but not possible",
+    ("7", "4"): "Security features not supported",
+    ("7", "5"): "Cryptographic failure",
+    ("7", "6"): "Cryptographic algorithm not supported",
+    ("7", "7"): "Message integrity failure",
+    ("7", "8"): "Authentication credentials invalid",
+    ("7", "9"): "Authentication mechanism is too weak",
+    ("7", "10"): "Encryption Needed",
+    ("7", "11"): "Encryption required for requested authentication mechanism",
+    ("7", "12"): "A password transition is needed",
+    ("7", "13"): "User Account Disabled",
+    ("7", "14"): "Trust relationship required",
+    ("7", "15"): "Priority Level is too low",
+    ("7", "16"): "Message is too big for the specified priority",
+    ("7", "17"): "Mailbox owner has changed",
+    ("7", "18"): "Domain owner has changed",
+    ("7", "19"): "RRVS test cannot be completed",
+    ("7", "20"): "No passing DKIM signature found",
+    ("7", "21"): "No acceptable DKIM signature found",
+    ("7", "22"): "No valid author-matched DKIM signature found",
+    ("7", "23"): "SPF validation failed",
+    ("7", "24"): "SPF validation error",
+    ("7", "25"): "Reverse DNS validation failed",
+    ("7", "26"): "Multiple authentication checks failed",
+    ("7", "27"): "Sender address has null MX",
+    ("7", "28"): "Mail flood detected",
+    ("7", "29"): "ARC validation failure",
+    ("7", "30"): "REQUIRETLS support required"
+}
 
 
 def _parse_transcript(transcript_data: str) -> tuple[list[SMTPExchange], ExtraExchangeData | None]:
@@ -72,16 +183,35 @@ def _parse_transcript(transcript_data: str) -> tuple[list[SMTPExchange], ExtraEx
 
     for line in transcript_data_lines:
         if match := _SMTP_RESPONSE_PATTERN.match(string=line):
-            group_dict = match.groupdict()
+            group_dict: dict[str, str] = match.groupdict()
 
             response_lines.append(group_dict['text'])
+
+            enhanced_status_code_ecs: SMTPEnhancedStatusCode | None = None
+
+            if enhanced_status_code := group_dict.get('enhanced_status_code'):
+                enhanced_status_code_ecs = SMTPEnhancedStatusCode(original=enhanced_status_code)
+                if enhanced_status_code_match := _ENHANCED_STATUS_CODE_PATTERN.match(string=enhanced_status_code):
+                    enhanced_status_code_group_dict: dict[str, str] = enhanced_status_code_match.groupdict()
+
+                    class_: str = enhanced_status_code_group_dict['class']
+                    enhanced_status_code_ecs.class_ = class_
+                    enhanced_status_code_ecs.class_text = CLASS_TO_TEXT.get(class_)
+
+                    subject: str = enhanced_status_code_group_dict['subject']
+                    enhanced_status_code_ecs.subject = subject
+                    enhanced_status_code_ecs.subject_text = SUBJECT_TO_TEXT.get(subject)
+
+                    detail: str = enhanced_status_code_group_dict['detail']
+                    enhanced_status_code_ecs.detail = detail
+                    enhanced_status_code_ecs.detail_text = SUBJECT_DETAIL_TO_TEXT.get((subject, detail))
 
             smtp_exchange_list.append(
                 SMTPExchange(
                     request=smtp_request,
                     response=SMTPResponse(
                         status_code=group_dict['status_code'],
-                        enhanced_status_code=group_dict.get('enhanced_status_code'),
+                        enhanced_status_code=enhanced_status_code_ecs,
                         lines=response_lines
                     )
                 )
@@ -104,6 +234,24 @@ def _parse_transcript(transcript_data: str) -> tuple[list[SMTPExchange], ExtraEx
         else:
             raise ValueError(f'Malformed SMTP line?: {line}')
 
+    if not extra_exchange_data.queue_id:
+        for smtp_exchange in reversed(smtp_exchange_list):
+            if response := smtp_exchange.response:
+                response_text: str | None = ' '.join(response.lines) if response.lines else None
+
+                if enhanced_status_code_ecs := response.enhanced_status_code:
+                    if (class_ := enhanced_status_code_ecs.class_) and class_ in {'4', '5'}:
+                        extra_exchange_data.error_code = enhanced_status_code_ecs.original
+                        extra_exchange_data.error_message = response_text or enhanced_status_code_ecs.detail_text
+                        extra_exchange_data.error_type = 'No message was queued.'
+                        break
+
+                if (status_code := response.status_code) and status_code[0] in {'4', '5'}:
+                    extra_exchange_data.error_code = status_code
+                    extra_exchange_data.error_message = response_text
+                    extra_exchange_data.error_type = 'No message was queued.'
+                    break
+
     return smtp_exchange_list, extra_exchange_data
 
 
@@ -115,10 +263,11 @@ class LogMilter(MilterBase):
 
         self._ecs_base: Base = Base(
             client=Client(),
+            error=Error(),
+            network=Network(transport='tcp'),
             server=Server(),
             smtp=SMTP(),
-            tls=TLS(),
-            network=Network(transport='tcp')
+            tls=TLS()
         )
 
         # TODO: It would be nice if I could retrieve this via `getsymval`.
@@ -230,12 +379,38 @@ class LogMilter(MilterBase):
                     msg='An unexpected exception occurred when attempting to create a email.message.Message from bytes.'
                 )
 
+            if ecs_email := self._ecs_base.email:
+                try:
+                    self._ecs_base.related = related_from_ecs_email(ecs_email=ecs_email)
+                except:
+                    LOG.exception(
+                        msg='An unexpected exception occurred when attempting to create related information.'
+                    )
+
+            try:
+                ecs_from, ecs_to = (
+                    (ecs_email.from_, ecs_email.to)
+                    if (ecs_email := self._ecs_base.email) else (None, None)
+                )
+
+                self._ecs_base.user = user_from_smtp_to_from(
+                    ecs_smtp=self._ecs_base.smtp,
+                    ecs_from=ecs_from,
+                    ecs_to=ecs_to
+                )
+            except:
+                LOG.exception(
+                    msg='An unexpected exception occurred when create user information from an SMTP entry.'
+                )
+
+
+
             if self._transcript_directory and self._ecs_base.client:
                 try:
                     client_address = self._ecs_base.client.address
                     client_port = self._ecs_base.client.port
                     # NOTE: I don't like to use sleep at all... Affects mail server throughput?
-                    sleep(0.5)
+                    sleep(SLEEP_SECONDS)
 
                     transcript_data: str = (self._transcript_directory / f'{client_address}_{client_port}').read_text()
 
@@ -245,9 +420,18 @@ class LogMilter(MilterBase):
                     self._ecs_base.smtp.transcript.exchange = exchange
                     if local_id := extra_exchange_data.queue_id:
                         self._ecs_base.email.local_id = local_id
+
+                    if error_message := extra_exchange_data.error_message:
+                        self._ecs_base.error.message = error_message
+
+                    if error_code := extra_exchange_data.error_code:
+                        self._ecs_base.error.code = error_code
+
+                    if error_type := extra_exchange_data.error_type:
+                        self._ecs_base.error.type = error_type
                 except:
                     LOG.exception(
-                        msg='An error occurred when attempting to obtain an SMTP transcript.'
+                        msg='An error occurred when attempting to obtain SMTP transcript information.'
                     )
 
             LOG.info(
