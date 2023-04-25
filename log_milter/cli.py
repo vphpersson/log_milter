@@ -1,8 +1,8 @@
 from pathlib import Path
-from typed_argument_parser import TypedArgumentParser
+from option_parser import OptionParser
 
 
-class LogMilterArgumentParser(TypedArgumentParser):
+class LogMilterArgumentParser(OptionParser):
     class Namespace:
         socket_path: str
         timeout: int

@@ -403,8 +403,6 @@ class LogMilter(MilterBase):
                     msg='An unexpected exception occurred when create user information from an SMTP entry.'
                 )
 
-
-
             if self._transcript_directory and self._ecs_base.client:
                 try:
                     client_address = self._ecs_base.client.address
@@ -445,7 +443,7 @@ class LogMilter(MilterBase):
 
 
 async def main():
-    args: Type[LogMilterArgumentParser.Namespace] = LogMilterArgumentParser().parse_args()
+    args: LogMilterArgumentParser.Namespace = LogMilterArgumentParser().parse_options()
 
     try:
         Milter.factory = partial(
