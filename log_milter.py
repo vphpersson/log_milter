@@ -25,14 +25,6 @@ from ecs_tools_py import make_log_handler, email_from_email_message, user_from_s
 from log_milter import LOG
 from log_milter.cli import LogMilterArgumentParser
 
-log_handler = make_log_handler(
-    base_class=TimedRotatingFileHandler,
-    provider_name='log_milter',
-    generate_field_names=('event.timezone', 'host.name', 'host.hostname')
-)(filename='log_milter.log', when='D')
-
-LOG.addHandler(hdlr=log_handler)
-LOG.setLevel(level=INFO)
 
 SLEEP_SECONDS: Final[float] = 0.5
 
@@ -443,11 +435,20 @@ class LogMilter(MilterBase):
 
 
 async def main():
-    args: LogMilterArgumentParser.Namespace = LogMilterArgumentParser().parse_options(
-        read_config_options=dict(raise_exception=False)
-    )
-
     try:
+        args: LogMilterArgumentParser.Namespace = LogMilterArgumentParser().parse_options(
+            read_config_options=dict(raise_exception=False)
+        )
+
+        log_handler = make_log_handler(
+            base_class=TimedRotatingFileHandler,
+            provider_name='log_milter',
+            generate_field_names=('event.timezone', 'host.name', 'host.hostname')
+        )(filename=args.log_path, when='D')
+
+        LOG.addHandler(hdlr=log_handler)
+        LOG.setLevel(level=INFO)
+
         Milter.factory = partial(
             LogMilter,
             server_port=args.server_port,
@@ -458,7 +459,9 @@ async def main():
         Milter.set_flags(0)
         Milter.set_exception_policy(MILTER_CONTINUE)
         Milter.runmilter('log_milter', args.socket_path, args.timeout)
-    except:
+    except KeyboardInterrupt:
+        pass
+    except Exception:
         LOG.exception(msg='An unexpected exception occurred.')
 
 
