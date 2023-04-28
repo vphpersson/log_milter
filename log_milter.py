@@ -443,7 +443,9 @@ class LogMilter(MilterBase):
 
 
 async def main():
-    args: LogMilterArgumentParser.Namespace = LogMilterArgumentParser().parse_options()
+    args: LogMilterArgumentParser.Namespace = LogMilterArgumentParser().parse_options(
+        read_config_options=dict(raise_exception=False)
+    )
 
     try:
         Milter.factory = partial(
