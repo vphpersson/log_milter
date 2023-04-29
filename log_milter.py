@@ -248,10 +248,10 @@ def _parse_transcript(transcript_data: str) -> tuple[list[SMTPExchange], ExtraEx
 
 
 class LogMilter(MilterBase):
-    def __init__(self, server_port: int | None = None, transcript_directory: Path | None = None):
+    def __init__(self, server_port: int | None = None, transcript_directory: Path | str | None = None):
         self.id = milter_unique_id()
 
-        self._transcript_directory: Path = transcript_directory
+        self._transcript_directory: Path | None = Path(transcript_directory) if transcript_directory else None
 
         self._ecs_base: Base = Base(
             client=Client(),
@@ -463,7 +463,7 @@ async def main():
 
         Milter.factory = partial(
             LogMilter,
-            server_port=args.server_port,
+            server_port=int(args.server_port) if args.server_port else None,
             transcript_directory=args.transcript_directory
         )
 
