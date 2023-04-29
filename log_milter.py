@@ -4,7 +4,7 @@ from logging import INFO
 from logging.handlers import TimedRotatingFileHandler
 from asyncio import run as asyncio_run
 from re import compile as re_compile, Pattern as RePattern
-from typing import Type, Final
+from typing import Final
 from dataclasses import dataclass
 from socket import AddressFamily
 from email import message_from_bytes as email_message_from_bytes
@@ -366,6 +366,12 @@ class LogMilter(MilterBase):
 
                     if mail_from := self._ecs_base.smtp.mail_from:
                         self._ecs_base.email.sender = Sender(address=mail_from)
+
+                    if bodies := self._ecs_base.email.bodies:
+                        if any(body.content_type == 'text/plain' for body in bodies):
+                            for body in bodies:
+                                if body.content_type != 'text/plain':
+                                    body.content = None
             except:
                 LOG.exception(
                     msg='An unexpected exception occurred when attempting to create a email.message.Message from bytes.'
@@ -402,7 +408,13 @@ class LogMilter(MilterBase):
                     # NOTE: I don't like to use sleep at all... Affects mail server throughput?
                     sleep(SLEEP_SECONDS)
 
-                    transcript_data: str = (self._transcript_directory / f'{client_address}_{client_port}').read_text()
+                    transcript_path = self._transcript_directory / f'{client_address}_{client_port}'
+                    transcript_data: str = transcript_path.read_text()
+
+                    try:
+                        transcript_path.unlink()
+                    except:
+                        LOG.exception(msg='An error occerred when attempting to unlink a transcript path.')
 
                     self._ecs_base.smtp.transcript = SMTPTranscript(original=transcript_data)
 
@@ -419,7 +431,7 @@ class LogMilter(MilterBase):
 
                     if error_type := extra_exchange_data.error_type:
                         self._ecs_base.error.type = error_type
-                except:
+                except Exception:
                     LOG.exception(
                         msg='An error occurred when attempting to obtain SMTP transcript information.'
                     )
