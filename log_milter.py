@@ -14,7 +14,6 @@ from io import BytesIO
 from time import sleep
 from pathlib import Path
 
-
 import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
     uniqueID as milter_unique_id, decode as milter_decode
@@ -23,7 +22,7 @@ from ecs_py import SMTP, Sender, Base, Server, Network, Client, TLS, SMTPTranscr
 from ecs_tools_py import make_log_handler, email_from_email_message, user_from_smtp_to_from, related_from_ecs_email
 
 from log_milter import LOG
-from log_milter.cli import LogMilterArgumentParser
+from log_milter.cli import LogMilterOptionParser
 
 
 SLEEP_SECONDS: Final[float] = 0.5
@@ -414,7 +413,7 @@ class LogMilter(MilterBase):
                     try:
                         transcript_path.unlink()
                     except:
-                        LOG.exception(msg='An error occerred when attempting to unlink a transcript path.')
+                        LOG.exception(msg='An error occurred when attempting to unlink a transcript path.')
 
                     self._ecs_base.smtp.transcript = SMTPTranscript(original=transcript_data)
 
@@ -448,7 +447,7 @@ class LogMilter(MilterBase):
 
 async def main():
     try:
-        args: LogMilterArgumentParser.Namespace = LogMilterArgumentParser().parse_options(
+        args: LogMilterOptionParser.Namespace = LogMilterOptionParser().parse_options(
             read_config_options=dict(raise_exception=False)
         )
 

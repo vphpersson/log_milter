@@ -2,13 +2,13 @@ from pathlib import Path
 from option_parser import OptionParser
 
 
-class LogMilterArgumentParser(OptionParser):
+class LogMilterOptionParser(OptionParser):
     class Namespace:
         socket_path: str
         timeout: int
         server_port: int | None
-        transcript_directory: Path | None = None
-        log_path: Path | None = None
+        transcript_directory: str | None = None
+        log_path: str | None = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(
@@ -38,14 +38,12 @@ class LogMilterArgumentParser(OptionParser):
 
         self.add_argument(
             '--transcript-directory',
-            type=Path,
             default='.',
             help='The path of a directory from which to read transcripts.'
         )
 
         self.add_argument(
             '--log-path',
-            type=Path,
             default='log_milter.log',
             help='The path where to store logs.'
         )
