@@ -44,6 +44,5 @@ class LogMilterOptionParser(OptionParser):
 
         self.add_argument(
             '--log-path',
-            default='log_milter.log',
             help='The path where to store logs.'
         )

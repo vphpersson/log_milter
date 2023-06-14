@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from logging import INFO
+from logging import INFO, StreamHandler
 from logging.handlers import TimedRotatingFileHandler
 from asyncio import run as asyncio_run
 from re import compile as re_compile, Pattern as RePattern
@@ -13,8 +13,8 @@ from functools import partial
 from io import BytesIO
 from time import sleep
 from pathlib import Path
-from socket import socket, AF_UNIX, SOCK_STREAM
-from os import chmod as os_chmod
+from os import umask as os_umask
+
 
 import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
@@ -453,11 +453,20 @@ async def main():
             read_config_options=dict(raise_exception=False)
         )
 
-        log_handler = make_log_handler(
-            base_class=TimedRotatingFileHandler,
+        log_handler_args = dict(
             provider_name='log_milter',
             generate_field_names=('event.timezone', 'host.name', 'host.hostname')
-        )(filename=args.log_path, when='D')
+        )
+        if args.log_path:
+            log_handler = make_log_handler(
+                base_class=TimedRotatingFileHandler,
+                **log_handler_args
+            )(filename=args.log_path, when='D')
+        else:
+            log_handler = make_log_handler(
+                base_class=StreamHandler,
+                **log_handler_args
+            )()
 
         LOG.addHandler(hdlr=log_handler)
         LOG.setLevel(level=INFO)
@@ -468,14 +477,12 @@ async def main():
             transcript_directory=args.transcript_directory
         )
 
-        Path(args.socket_path).unlink(missing_ok=True)
-        socket(family=AF_UNIX, type=SOCK_STREAM).bind(args.socket_path)
-        os_chmod(args.socket_path, 0o766)
+        os_umask(0o011)
 
         # Mails are not modified, so no flags.
         Milter.set_flags(0)
         Milter.set_exception_policy(MILTER_CONTINUE)
-        Milter.runmilter('log_milter', args.socket_path, args.timeout, rmsock=False)
+        Milter.runmilter('log_milter', args.socket_path, args.timeout)
     except KeyboardInterrupt:
         pass
     except Exception:
