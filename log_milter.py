@@ -13,6 +13,8 @@ from functools import partial
 from io import BytesIO
 from time import sleep
 from pathlib import Path
+from socket import socket, AF_UNIX, SOCK_STREAM
+from os import chmod as os_chmod
 
 import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
@@ -466,10 +468,14 @@ async def main():
             transcript_directory=args.transcript_directory
         )
 
+        Path(args.socket_path).unlink(missing_ok=True)
+        socket(family=AF_UNIX, type=SOCK_STREAM).bind(args.socket_path)
+        os_chmod(args.socket_path, 0o766)
+
         # Mails are not modified, so no flags.
         Milter.set_flags(0)
         Milter.set_exception_policy(MILTER_CONTINUE)
-        Milter.runmilter('log_milter', args.socket_path, args.timeout)
+        Milter.runmilter('log_milter', args.socket_path, args.timeout, rmsock=False)
     except KeyboardInterrupt:
         pass
     except Exception:
