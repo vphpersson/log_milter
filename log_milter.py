@@ -255,26 +255,36 @@ class LogMilter(MilterBase):
         self._transcript_directory: Path | None = Path(transcript_directory) if transcript_directory else None
 
         self._ecs_base: Base = Base(
-            client=Client(),
             error=Error(),
             network=Network(transport='tcp'),
-            server=Server(),
+            server=Server(address=self.getsymval(sym='j')),
             smtp=SMTP(),
             tls=TLS()
         )
 
-        # TODO: It would be nice if I could retrieve this via `getsymval`.
-        if server_port:
-            self._ecs_base.server.port = server_port
-            
+        client_addr = self.getsymval(sym='{client_addr}')
+        client_port = int(self.getsymval(sym='{client_port}'))
+        client_name = self.getsymval(sym='{client_name}')
+
+        if client_port != 0:
+            self._ecs_base.client = Client(
+                address=client_name if client_name and client_name != 'unknown' else client_addr,
+                ip=client_addr,
+                port=client_port
+            )
+
+        daemon_addr = self.getsymval(sym='{daemon_addr}')
+        daemon_port = int(self.getsymval(sym='{daemon_port}'))
+
+        if daemon_port != 0:
+            self._ecs_base.server.ip = daemon_addr
+            self._ecs_base.server.port = daemon_port
+
         self._message: BytesIO = BytesIO()
 
     @milter_noreply
     def connect(self, hostname, family, hostaddr):
         try:
-            self._ecs_base.server.address = self.getsymval(sym='j')
-            self._ecs_base.server.ip = self.getsymval(sym='{daemon_addr}')
-
             match family:
                 case AddressFamily.AF_INET:
                     network_type = 'ipv4'
@@ -283,10 +293,7 @@ class LogMilter(MilterBase):
                 case _:
                     network_type = None
 
-            if network_type:
-                self._ecs_base.network.type = network_type
-                self._ecs_base.client.address = hostaddr[0]
-                self._ecs_base.client.port = hostaddr[1]
+            self._ecs_base.network.type = network_type
         except:
             LOG.exception(msg='An unexpected exception occurred in connect.')
 
@@ -437,8 +444,13 @@ class LogMilter(MilterBase):
                         msg='An error occurred when attempting to obtain SMTP transcript information.'
                     )
 
+            if not self._ecs_base.client or self._ecs_base.server.port == 587:
+                message = 'An email was submitted.'
+            else:
+                message = 'An email was received.'
+
             LOG.info(
-                msg='An incoming email was logged.',
+                msg=message,
                 extra=dict(self._ecs_base) | dict(_ecs_logger_handler_options=dict(merge_extra=True))
             )
         except:
