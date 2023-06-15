@@ -257,34 +257,35 @@ class LogMilter(MilterBase):
         self._ecs_base: Base = Base(
             error=Error(),
             network=Network(transport='tcp'),
-            server=Server(address=self.getsymval(sym='j')),
             smtp=SMTP(),
             tls=TLS()
         )
-
-        client_addr = self.getsymval(sym='{client_addr}')
-        client_port = int(self.getsymval(sym='{client_port}'))
-        client_name = self.getsymval(sym='{client_name}')
-
-        if client_port != 0:
-            self._ecs_base.client = Client(
-                address=client_name if client_name and client_name != 'unknown' else client_addr,
-                ip=client_addr,
-                port=client_port
-            )
-
-        daemon_addr = self.getsymval(sym='{daemon_addr}')
-        daemon_port = int(self.getsymval(sym='{daemon_port}'))
-
-        if daemon_port != 0:
-            self._ecs_base.server.ip = daemon_addr
-            self._ecs_base.server.port = daemon_port
 
         self._message: BytesIO = BytesIO()
 
     @milter_noreply
     def connect(self, hostname, family, hostaddr):
         try:
+            self._ecs_base.server = Server(address=self.getsymval(sym='j')),
+
+            client_addr = self.getsymval(sym='{client_addr}')
+            client_port = int(self.getsymval(sym='{client_port}'))
+            client_name = self.getsymval(sym='{client_name}')
+
+            if client_port != 0:
+                self._ecs_base.client = Client(
+                    address=client_name if client_name and client_name != 'unknown' else client_addr,
+                    ip=client_addr,
+                    port=client_port
+                )
+
+            daemon_addr = self.getsymval(sym='{daemon_addr}')
+            daemon_port = int(self.getsymval(sym='{daemon_port}'))
+
+            if daemon_port != 0:
+                self._ecs_base.server.ip = daemon_addr
+                self._ecs_base.server.port = daemon_port
+
             match family:
                 case AddressFamily.AF_INET:
                     network_type = 'ipv4'
