@@ -249,17 +249,12 @@ def _parse_transcript(transcript_data: str) -> tuple[list[SMTPExchange], ExtraEx
 
 
 class LogMilter(MilterBase):
-    def __init__(self, server_port: int | None = None, transcript_directory: Path | str | None = None):
+    def __init__(self, transcript_directory: Path | str | None = None):
         self.id = milter_unique_id()
 
         self._transcript_directory: Path | None = Path(transcript_directory) if transcript_directory else None
 
-        self._ecs_base: Base = Base(
-            error=Error(),
-            network=Network(transport='tcp'),
-            smtp=SMTP(),
-            tls=TLS()
-        )
+        self._ecs_base: Base = Base(error=Error(), smtp=SMTP(), tls=TLS())
 
         self._message: BytesIO = BytesIO()
 
@@ -267,6 +262,7 @@ class LogMilter(MilterBase):
     def connect(self, hostname, family, hostaddr):
         try:
             self._ecs_base.server = Server(address=self.getsymval(sym='j'))
+            self._ecs_base.network = Network(transport='tcp')
 
             client_addr = self.getsymval(sym='{client_addr}')
             client_port = int(self.getsymval(sym='{client_port}'))
@@ -445,13 +441,8 @@ class LogMilter(MilterBase):
                         msg='An error occurred when attempting to obtain SMTP transcript information.'
                     )
 
-            if not self._ecs_base.client or self._ecs_base.server.port == 587:
-                message = 'An email was submitted.'
-            else:
-                message = 'An email was received.'
-
             LOG.info(
-                msg=message,
+                msg='SMTP traffic was observed.',
                 extra=dict(self._ecs_base) | dict(_ecs_logger_handler_options=dict(merge_extra=True))
             )
         except:
@@ -484,12 +475,11 @@ async def main():
         LOG.addHandler(hdlr=log_handler)
         LOG.setLevel(level=INFO)
 
-        Milter.factory = partial(
-            LogMilter,
-            server_port=int(args.server_port) if args.server_port else None,
-            transcript_directory=args.transcript_directory
-        )
+        Milter.factory = partial(LogMilter, transcript_directory=args.transcript_directory)
 
+        # Make the socket that `Milter.runmilter` creates writable.
+        # Not nice to do it globally liske this, but the socket cannot already exist and must be created by
+        # `Milter.runmilter`.
         os_umask(0o011)
 
         # Mails are not modified, so no flags.
