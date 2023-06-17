@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from logging import INFO, StreamHandler
+from logging import INFO, DEBUG, StreamHandler
 from logging.handlers import TimedRotatingFileHandler
 from asyncio import run as asyncio_run
 from re import compile as re_compile, Pattern as RePattern
@@ -261,6 +261,7 @@ class LogMilter(MilterBase):
     @milter_noreply
     def connect(self, hostname, family, hostaddr):
         try:
+            LOG.debug(msg=f'{id(self)}: Entering connect')
             self._ecs_base.server = Server(address=self.getsymval(sym='j'))
             self._ecs_base.network = Network(transport='tcp')
 
@@ -299,6 +300,7 @@ class LogMilter(MilterBase):
     @milter_noreply
     def hello(self, hostname: str):
         try:
+            LOG.debug(msg=f'{id(self)}: Entering hello')
             self._ecs_base.smtp.ehlo = hostname
 
             if cipher := self.getsymval(sym='{cipher}'):
@@ -317,6 +319,7 @@ class LogMilter(MilterBase):
     @milter_noreply
     def envfrom(self, f: str, *args):
         try:
+            LOG.debug(msg=f'{id(self)}: Entering envfrom')
             self._ecs_base.smtp.mail_from = email_util_parseaddr(addr=f)[1]
         except:
             LOG.exception(msg='An unexpected exception occurred in envfrom.')
@@ -326,6 +329,7 @@ class LogMilter(MilterBase):
     @milter_noreply
     def envrcpt(self, to: str, *args):
         try:
+            LOG.debug(msg=f'{id(self)}: Entering envrcpt')
             self._ecs_base.smtp.rcpt_to = email_util_parseaddr(addr=to)[1]
         except:
             LOG.exception(msg='An unexpected exception occurred in envrcpt.')
@@ -336,6 +340,7 @@ class LogMilter(MilterBase):
     @milter_decode('bytes')
     def header(self, fld: str, val: bytes):
         try:
+            LOG.debug(msg=f'{id(self)}: Entering header')
             self._message.write(fld.encode(encoding='ascii') + b': ' + val + b'\r\n')
         except:
             LOG.exception(msg='An unexpected exception occurred in header_bytes.')
@@ -345,6 +350,7 @@ class LogMilter(MilterBase):
     @milter_noreply
     def eoh(self):
         try:
+            LOG.debug(msg=f'{id(self)}: Entering eoh')
             self._message.write(b'\r\n')
         except:
             LOG.exception(msg='An unexpected exception occurred in eoh.')
@@ -353,6 +359,7 @@ class LogMilter(MilterBase):
 
     @milter_noreply
     def body(self, blk: bytes):
+        LOG.debug(msg=f'{id(self)}: Entering body')
         self._message.write(blk)
         return MILTER_CONTINUE
 
@@ -473,7 +480,7 @@ async def main():
             )()
 
         LOG.addHandler(hdlr=log_handler)
-        LOG.setLevel(level=INFO)
+        LOG.setLevel(level=DEBUG if args.verbose else INFO)
 
         Milter.factory = partial(LogMilter, transcript_directory=args.transcript_directory)
 

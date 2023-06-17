@@ -9,6 +9,7 @@ class LogMilterOptionParser(OptionParser):
         server_port: int | None
         transcript_directory: str | None = None
         log_path: str | None = None
+        verbose: bool = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(
@@ -45,4 +46,9 @@ class LogMilterOptionParser(OptionParser):
         self.add_argument(
             '--log-path',
             help='The path where to store logs.'
+        )
+
+        self.add_argument(
+            '-v', '--verbose',
+            help='Log in verbose mode.'
         )
