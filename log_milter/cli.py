@@ -50,5 +50,6 @@ class LogMilterOptionParser(OptionParser):
 
         self.add_argument(
             '-v', '--verbose',
-            help='Log in verbose mode.'
+            help='Log in verbose mode.',
+            action='store_true'
         )
