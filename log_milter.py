@@ -365,6 +365,7 @@ class LogMilter(MilterBase):
 
     def close(self):
         try:
+            LOG.debug(msg=f'{id(self)}: Entering close')
             try:
                 if message_bytes := self._message.getvalue():
                     self._ecs_base.email = email_from_email_message(
