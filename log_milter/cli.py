@@ -1,4 +1,3 @@
-from pathlib import Path
 from option_parser import OptionParser
 
 
@@ -29,12 +28,6 @@ class LogMilterOptionParser(OptionParser):
             help='The number of seconds to wait before considering the milter dead.',
             type=int,
             default=30
-        )
-
-        self.add_argument(
-            '--server-port',
-            type=int,
-            help='The port on which the mail server receiving incoming email.'
         )
 
         self.add_argument(
