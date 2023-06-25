@@ -1,0 +1,6 @@
+[project]
+name = "log_milter"
+version = "0.5"
+dependencies = [
+    "smtp_lib[parse] @ git+https://github.com/vphpersson/ecs_py.git"
+]
