@@ -167,18 +167,20 @@ class LogMilter(MilterBase):
                             for body in bodies:
                                 if body.content_type != 'text/plain':
                                     body.content = None
+                else:
+                    return MILTER_CONTINUE
             except:
                 LOG.exception(
                     msg='An unexpected exception occurred when attempting to create a email.message.Message from bytes.'
                 )
+                return MILTER_CONTINUE
 
-            if ecs_email := self._ecs_base.email:
-                try:
-                    self._ecs_base.related = related_from_ecs_email(ecs_email=ecs_email)
-                except:
-                    LOG.exception(
-                        msg='An unexpected exception occurred when attempting to create related information.'
-                    )
+            try:
+                self._ecs_base.related = related_from_ecs_email(ecs_email=self._ecs_base.email)
+            except:
+                LOG.exception(
+                    msg='An unexpected exception occurred when attempting to create related information.'
+                )
 
             try:
                 ecs_from, ecs_to = (
@@ -228,7 +230,7 @@ class LogMilter(MilterBase):
 
                     if error_type := extra_exchange_data.error_type:
                         self._ecs_base.error.type = error_type
-                except Exception:
+                except:
                     LOG.exception(
                         msg='An error occurred when attempting to obtain SMTP transcript information.'
                     )
