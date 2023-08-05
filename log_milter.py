@@ -12,6 +12,8 @@ from io import BytesIO
 from time import sleep
 from pathlib import Path
 from os import umask as os_umask
+from datetime import datetime
+from subprocess import run as subprocess_run, PIPE as SUBPROCESS_PIPE
 
 import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
@@ -27,6 +29,24 @@ from log_milter.cli import LogMilterOptionParser
 SLEEP_SECONDS: Final[float] = 0.5
 
 TLS_VERSION_PATTERN: Final[RePattern] = re_compile(pattern=r'^(?P<protocol>.+)v(?P<number>[0-9.]+)$')
+_BIRTH_PATTERN: Final[RePattern] = re_compile(
+    pattern=r'^\s*Birth: (.+)... ([^ ]+)$'
+)
+
+
+def get_creation_time(file_path: str) -> datetime:
+    stat_process = subprocess_run(
+        ['stat', file_path],
+        stdout=SUBPROCESS_PIPE,
+        text=True
+    )
+    return next(
+        datetime.strptime(
+            f'{match.group(1)} {match.group(2)}',
+            '%Y-%m-%d %H:%M:%S.%f %z'
+        )
+        for line in stat_process.stdout.splitlines() if (match := _BIRTH_PATTERN.search(string=line))
+    )
 
 
 class LogMilter(MilterBase):
@@ -158,7 +178,7 @@ class LogMilter(MilterBase):
         try:
             LOG.debug(msg=f'{id(self)}: Entering close')
 
-            if self._transcript_directory and self.base.client and self.base.server:
+            if not (self._transcript_directory and self.base.client and self.base.server):
                 return MILTER_CONTINUE
 
             try:
@@ -223,6 +243,15 @@ class LogMilter(MilterBase):
                 transcript_data: str = transcript_path.read_text()
 
                 try:
+                    event_start: datetime = get_creation_time(file_path=str(transcript_path))
+                except:
+                    LOG.exception(
+                        msg='An error occurred when attempting to obtain the creation time of a transcript path.'
+                    )
+                else:
+                    self.base.set_field_value(field_name='event.start', value=event_start)
+
+                try:
                     transcript_path.unlink()
                 except:
                     LOG.exception(msg='An error occurred when attempting to unlink a transcript path.')
@@ -244,7 +273,7 @@ class LogMilter(MilterBase):
                     self.base.set_field_value(field_name='error.type', value=error_type)
 
                 LOG.info(
-                    msg='SMTP traffic was observed.',
+                    msg='smtp traffic was observed.',
                     extra=dict(self.base) | dict(_ecs_logger_handler_options=dict(merge_extra=True))
                 )
             except:
