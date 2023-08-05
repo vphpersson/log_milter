@@ -1,4 +1,7 @@
 from option_parser import OptionParser
+from ecs_tools_py import make_log_action
+
+from log_milter import LOG
 
 
 class LogMilterOptionParser(OptionParser):
@@ -7,7 +10,6 @@ class LogMilterOptionParser(OptionParser):
         timeout: int
         server_port: int | None
         transcript_directory: str | None = None
-        log_path: str | None = None
         verbose: bool = False
 
     def __init__(self, *args, **kwargs):
@@ -37,8 +39,9 @@ class LogMilterOptionParser(OptionParser):
         )
 
         self.add_argument(
-            '--log-path',
-            help='The path where to store logs.'
+            '--log',
+            help='A log specifier specifying how logging is to be performed.',
+            action=make_log_action(event_provider='log_milter', log=LOG)
         )
 
         self.add_argument(

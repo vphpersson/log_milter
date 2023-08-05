@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
-from logging import INFO, DEBUG, StreamHandler
-from logging.handlers import TimedRotatingFileHandler
+from logging import INFO, DEBUG
 from asyncio import run as asyncio_run
 from re import compile as re_compile, Pattern as RePattern
 from typing import Final
@@ -17,8 +16,8 @@ from os import umask as os_umask
 import Milter
 from Milter import noreply as milter_noreply, CONTINUE as MILTER_CONTINUE, Base as MilterBase, \
     uniqueID as milter_unique_id, decode as milter_decode
-from ecs_py import SMTP, Sender, Base, Server, Network, Client, TLS, SMTPTranscript, Error
-from ecs_tools_py import make_log_handler, email_from_email_message, user_from_smtp_to_from, related_from_ecs_email
+from ecs_py import Base
+from ecs_tools_py import email_from_email_message, user_from_smtp_to_from, related_from_ecs_email
 from smtp_lib.parse.transcript import parse_transcript
 
 from log_milter import LOG
@@ -36,7 +35,7 @@ class LogMilter(MilterBase):
 
         self._transcript_directory: Path | None = Path(transcript_directory) if transcript_directory else None
 
-        self._ecs_base: Base = Base(error=Error(), smtp=SMTP(), tls=TLS())
+        self.base: Base = Base()
 
         self._message: BytesIO = BytesIO()
 
@@ -44,26 +43,32 @@ class LogMilter(MilterBase):
     def connect(self, hostname, family, hostaddr):
         try:
             LOG.debug(msg=f'{id(self)}: Entering connect')
-            self._ecs_base.server = Server(address=self.getsymval(sym='j'))
-            self._ecs_base.network = Network(transport='tcp')
+            self.base.set_field_value(field_name='server.address', value=self.getsymval(sym='j'))
+            self.base.set_field_value(field_name='network.transport', value='tcp')
 
             client_addr = self.getsymval(sym='{client_addr}')
             client_port = int(self.getsymval(sym='{client_port}'))
             client_name = self.getsymval(sym='{client_name}')
 
             if client_port != 0:
-                self._ecs_base.client = Client(
-                    address=client_name if client_name and client_name != 'unknown' else client_addr,
-                    ip=client_addr,
-                    port=client_port
+                self.base.assign(
+                    value_dict={
+                        'client.address': client_name if client_name and client_name != 'unknown' else client_addr,
+                        'client.ip': client_addr,
+                        'client.port': client_port
+                    }
                 )
 
             daemon_addr = self.getsymval(sym='{daemon_addr}')
             daemon_port = int(self.getsymval(sym='{daemon_port}'))
 
             if daemon_port != 0:
-                self._ecs_base.server.ip = daemon_addr
-                self._ecs_base.server.port = daemon_port
+                self.base.assign(
+                    value_dict={
+                        'server.ip': daemon_addr,
+                        'server.port': daemon_port
+                    }
+                )
 
             match family:
                 case AddressFamily.AF_INET:
@@ -73,7 +78,7 @@ class LogMilter(MilterBase):
                 case _:
                     network_type = None
 
-            self._ecs_base.network.type = network_type
+            self.base.set_field_value(field_name='network.type', value=network_type)
         except:
             LOG.exception(msg='An unexpected exception occurred in connect.')
 
@@ -83,16 +88,20 @@ class LogMilter(MilterBase):
     def hello(self, hostname: str):
         try:
             LOG.debug(msg=f'{id(self)}: Entering hello')
-            self._ecs_base.smtp.ehlo = hostname
+            self.base.set_field_value(field_name='smtp.ehlo', value=hostname)
 
             if cipher := self.getsymval(sym='{cipher}'):
-                self._ecs_base.tls.cipher = cipher
+                self.base.set_field_value(field_name='tls.cipher', value=cipher)
 
             if tls_version := self.getsymval(sym='{tls_version}'):
                 if match := TLS_VERSION_PATTERN.match(string=tls_version):
                     match_groupdict: dict[str, str] = match.groupdict()
-                    self._ecs_base.tls.version_protocol = match_groupdict['protocol'].lower()
-                    self._ecs_base.tls.version = match_groupdict['number']
+                    self.base.assign(
+                        value_dict={
+                            'tls.version_protocol': match_groupdict['protocol'].lower(),
+                            'tls.version': match_groupdict['number']
+                        }
+                    )
         except:
             LOG.exception(msg='An unexpected exception occurred in hello.')
 
@@ -102,7 +111,7 @@ class LogMilter(MilterBase):
     def envfrom(self, f: str, *args):
         try:
             LOG.debug(msg=f'{id(self)}: Entering envfrom')
-            self._ecs_base.smtp.mail_from = email_util_parseaddr(addr=f)[1]
+            self.base.set_field_value(field_name='smtp.mail_from', value=email_util_parseaddr(addr=f)[1])
         except:
             LOG.exception(msg='An unexpected exception occurred in envfrom.')
 
@@ -112,7 +121,7 @@ class LogMilter(MilterBase):
     def envrcpt(self, to: str, *args):
         try:
             LOG.debug(msg=f'{id(self)}: Entering envrcpt')
-            self._ecs_base.smtp.rcpt_to = email_util_parseaddr(addr=to)[1]
+            self.base.set_field_value(field_name='smtp.rcpt_to', value=email_util_parseaddr(addr=to)[1])
         except:
             LOG.exception(msg='An unexpected exception occurred in envrcpt.')
 
@@ -148,9 +157,13 @@ class LogMilter(MilterBase):
     def close(self):
         try:
             LOG.debug(msg=f'{id(self)}: Entering close')
+
+            if self._transcript_directory and self.base.client and self.base.server:
+                return MILTER_CONTINUE
+
             try:
                 if message_bytes := self._message.getvalue():
-                    self._ecs_base.email = email_from_email_message(
+                    self.base.email = email_from_email_message(
                         email_message=email_message_from_bytes(message_bytes),
                         include_raw_headers=True,
                         extract_attachments=True,
@@ -159,10 +172,10 @@ class LogMilter(MilterBase):
                         extract_body_content=True
                     )
 
-                    if mail_from := self._ecs_base.smtp.mail_from:
-                        self._ecs_base.email.sender = Sender(address=mail_from)
+                    if mail_from := self.base.get_field_value(field_name='smtp.mail_from'):
+                        self.base.set_field_value(field_name='email.sender.address', value=mail_from)
 
-                    if bodies := self._ecs_base.email.bodies:
+                    if bodies := self.base.get_field_value(field_name='email.bodies'):
                         if any(body.content_type == 'text/plain' for body in bodies):
                             for body in bodies:
                                 if body.content_type != 'text/plain':
@@ -176,7 +189,7 @@ class LogMilter(MilterBase):
                 return MILTER_CONTINUE
 
             try:
-                self._ecs_base.related = related_from_ecs_email(ecs_email=self._ecs_base.email)
+                self.base.related = related_from_ecs_email(ecs_email=self.base.email)
             except:
                 LOG.exception(
                     msg='An unexpected exception occurred when attempting to create related information.'
@@ -185,11 +198,11 @@ class LogMilter(MilterBase):
             try:
                 ecs_from, ecs_to = (
                     (ecs_email.from_, ecs_email.to)
-                    if (ecs_email := self._ecs_base.email) else (None, None)
+                    if (ecs_email := self.base.email) else (None, None)
                 )
 
-                self._ecs_base.user = user_from_smtp_to_from(
-                    ecs_smtp=self._ecs_base.smtp,
+                self.base.user = user_from_smtp_to_from(
+                    ecs_smtp=self.base.smtp,
                     ecs_from=ecs_from,
                     ecs_to=ecs_to
                 )
@@ -198,47 +211,46 @@ class LogMilter(MilterBase):
                     msg='An unexpected exception occurred when create user information from an SMTP entry.'
                 )
 
-            if self._transcript_directory and self._ecs_base.client and self._ecs_base.server:
+            try:
+                client_ip = self.base.client.ip
+                client_port = self.base.client.port
+                server_ip = self.base.server.ip
+                server_port = self.base.server.port
+                # NOTE: I don't like to use sleep at all... Affects mail server throughput?
+                sleep(SLEEP_SECONDS)
+
+                transcript_path = self._transcript_directory / f'{server_ip}_{server_port}_{client_ip}_{client_port}'
+                transcript_data: str = transcript_path.read_text()
+
                 try:
-                    client_ip = self._ecs_base.client.ip
-                    client_port = self._ecs_base.client.port
-                    server_ip = self._ecs_base.server.ip
-                    server_port = self._ecs_base.server.port
-                    # NOTE: I don't like to use sleep at all... Affects mail server throughput?
-                    sleep(SLEEP_SECONDS)
-
-                    transcript_path = self._transcript_directory / f'{server_ip}_{server_port}_{client_ip}_{client_port}'
-                    transcript_data: str = transcript_path.read_text()
-
-                    try:
-                        transcript_path.unlink()
-                    except:
-                        LOG.exception(msg='An error occurred when attempting to unlink a transcript path.')
-
-                    self._ecs_base.smtp.transcript = SMTPTranscript(original=transcript_data)
-
-                    exchange, extra_exchange_data = parse_transcript(transcript_data=transcript_data)
-                    self._ecs_base.smtp.transcript.exchange = exchange
-                    if local_id := extra_exchange_data.queue_id:
-                        self._ecs_base.email.local_id = local_id
-
-                    if error_message := extra_exchange_data.error_message:
-                        self._ecs_base.error.message = error_message
-
-                    if error_code := extra_exchange_data.error_code:
-                        self._ecs_base.error.code = error_code
-
-                    if error_type := extra_exchange_data.error_type:
-                        self._ecs_base.error.type = error_type
+                    transcript_path.unlink()
                 except:
-                    LOG.exception(
-                        msg='An error occurred when attempting to obtain SMTP transcript information.'
-                    )
+                    LOG.exception(msg='An error occurred when attempting to unlink a transcript path.')
 
-            LOG.info(
-                msg='SMTP traffic was observed.',
-                extra=dict(self._ecs_base) | dict(_ecs_logger_handler_options=dict(merge_extra=True))
-            )
+                self.base.set_field_value(field_name='smtp.transcript.original', value=transcript_data)
+
+                exchange, extra_exchange_data = parse_transcript(transcript_data=transcript_data)
+                self.base.set_field_value(field_name='smtp.transcript.exchange', value=exchange)
+                if local_id := extra_exchange_data.queue_id:
+                    self.base.set_field_value(field_name='email.local_id', value=local_id)
+
+                if error_message := extra_exchange_data.error_message:
+                    self.base.set_field_value(field_name='error.message', value=error_message)
+
+                if error_code := extra_exchange_data.error_code:
+                    self.base.set_field_value(field_name='error.code', value=error_code)
+
+                if error_type := extra_exchange_data.error_type:
+                    self.base.set_field_value(field_name='error.type', value=error_type)
+
+                LOG.info(
+                    msg='SMTP traffic was observed.',
+                    extra=dict(self.base) | dict(_ecs_logger_handler_options=dict(merge_extra=True))
+                )
+            except:
+                LOG.exception(
+                    msg='An error occurred when attempting to obtain SMTP transcript information.'
+                )
         except:
             LOG.exception(msg='An unexpected exception occurred in close.')
 
@@ -251,22 +263,6 @@ async def main():
             read_config_options=dict(raise_exception=False)
         )
 
-        log_handler_args = dict(
-            provider_name='log_milter',
-            generate_field_names=('event.timezone', 'host.name', 'host.hostname')
-        )
-        if args.log_path:
-            log_handler = make_log_handler(
-                base_class=TimedRotatingFileHandler,
-                **log_handler_args
-            )(filename=args.log_path, when='D')
-        else:
-            log_handler = make_log_handler(
-                base_class=StreamHandler,
-                **log_handler_args
-            )()
-
-        LOG.addHandler(hdlr=log_handler)
         LOG.setLevel(level=DEBUG if args.verbose else INFO)
 
         Milter.factory = partial(LogMilter, transcript_directory=args.transcript_directory)
