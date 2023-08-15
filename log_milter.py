@@ -66,7 +66,7 @@ class LogMilter(MilterBase):
             self.base.set_field_value(field_name='server.address', value=self.getsymval(sym='j'))
             self.base.set_field_value(field_name='network.transport', value='tcp')
 
-            client_addr = self.getsymval(sym='{client_addr}')
+            client_addr = self.getsymval(sym='{client_addr}').removeprefix('IPv6:')
             client_port = int(self.getsymval(sym='{client_port}'))
             client_name = self.getsymval(sym='{client_name}')
 

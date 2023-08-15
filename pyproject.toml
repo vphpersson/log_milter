@@ -1,6 +1,6 @@
 [project]
 name = "log_milter"
-version = "0.7"
+version = "0.71"
 dependencies = [
     "pymilter",
     "ecs_py @ git+https://github.com/vphpersson/ecs_py.git#egg=ecs_py",
